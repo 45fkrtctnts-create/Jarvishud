@@ -30,7 +30,7 @@ jobs:
           gradle-version: '8.9'
 
       - name: Extract JARVIS project
-        run: unzip -o "JarvisHUD_Projesi.zip" -d extracted
+        run: unzip -o "JarvisHUD_Project.zip" -d extracted
 
       - name: Build APK
         run: gradle -p extracted/JarvisHUD assembleDebug
