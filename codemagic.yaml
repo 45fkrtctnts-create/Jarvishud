@@ -1,1 +1,87 @@
+workflows:
+  jarvis-android-debug:
+    name: JARVIS Android APK
 
+    max_build_duration: 60
+
+    environment:
+      java: 17
+
+    scripts:
+      - name: Find latest JARVIS ZIP
+        script: |
+          ZIP_FILE=$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = list(Path(".").glob("JarvisHUD_Project*.zip"))
+
+          if not files:
+              raise SystemExit("ERROR: JarvisHUD_Project ZIP bulunamadi.")
+
+          def version(path):
+              match = re.fullmatch(
+                  r"JarvisHUD_Project(?: \((\d+)\))?\.zip",
+                  path.name
+              )
+              if not match:
+                  return -1
+              return int(match.group(1) or 0)
+
+          latest = max(files, key=version)
+          print(latest)
+          PY
+          )
+
+          echo "Using JARVIS archive: $ZIP_FILE"
+          echo "$ZIP_FILE" > /tmp/jarvis_zip_name
+
+      - name: Extract JARVIS project
+        script: |
+          ZIP_FILE=$(cat /tmp/jarvis_zip_name)
+
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+          echo "Project extracted."
+          ls -la extracted/JarvisHUD
+
+      - name: Set Android SDK location
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > extracted/JarvisHUD/local.properties
+
+      - name: Verify JARVIS project
+        script: |
+          test -f extracted/JarvisHUD/settings.gradle || {
+            echo "ERROR: settings.gradle bulunamadi."
+            exit 1
+          }
+
+          test -f extracted/JarvisHUD/build.gradle || {
+            echo "ERROR: build.gradle bulunamadi."
+            exit 1
+          }
+
+          echo "JARVIS Android project OK."
+
+      - name: Build JARVIS APK
+        script: |
+          cd extracted/JarvisHUD
+          gradle assembleDebug
+
+      - name: Verify APK
+        script: |
+          APK="extracted/JarvisHUD/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK olusturulamadi."
+            exit 1
+          fi
+
+          echo "JARVIS APK created:"
+          ls -lh "$APK"
+
+    artifacts:
+      - extracted/JarvisHUD/app/build/outputs/apk/debug/app-debug.apk
