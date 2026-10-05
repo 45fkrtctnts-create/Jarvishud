@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -25,14 +25,78 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Extract JARVIS project
-        run: unzip -o JarvisHUD_Project.zip -d extracted
+      - name: Find and extract latest JARVIS project
+        run: |
+          ZIP_FILE=$(python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-      - name: Build APK
-        run: gradle -p extracted/JarvisHUD assembleDebug
+          files = list(Path(".").glob("JarvisHUD_Project*.zip"))
 
-      - name: Upload APK
+          if not files:
+              raise SystemExit("ERROR: JarvisHUD_Project ZIP bulunamadi.")
+
+          def version(path):
+              match = re.fullmatch(
+                  r"JarvisHUD_Project(?: \((\d+)\))?\.zip",
+                  path.name
+              )
+
+              if not match:
+                  return -1
+
+              return int(match.group(1) or 0)
+
+          latest = max(files, key=version)
+
+          if version(latest) < 0:
+              raise SystemExit("ERROR: Uygun JARVIS ZIP dosyasi bulunamadi.")
+
+          print(latest)
+          PY
+          )
+
+          echo "========================================"
+          echo "Using JARVIS archive: $ZIP_FILE"
+          echo "========================================"
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+      - name: Verify project
+        run: |
+          echo "Extracted project contents:"
+          ls -la extracted/JarvisHUD
+
+          test -f extracted/JarvisHUD/settings.gradle || {
+            echo "ERROR: settings.gradle bulunamadi."
+            exit 1
+          }
+
+          test -f extracted/JarvisHUD/build.gradle || {
+            echo "ERROR: build.gradle bulunamadi."
+            exit 1
+          }
+
+      - name: Build JARVIS APK
+        run: |
+          gradle -p extracted/JarvisHUD assembleDebug
+
+      - name: Verify APK
+        run: |
+          APK="extracted/JarvisHUD/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK olusturulamadi."
+            exit 1
+          fi
+
+          echo "APK successfully created:"
+          ls -lh "$APK"
+
+      - name: Upload JARVIS APK
         uses: actions/upload-artifact@v4
         with:
           name: JarvisHUD-APK
           path: extracted/JarvisHUD/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
