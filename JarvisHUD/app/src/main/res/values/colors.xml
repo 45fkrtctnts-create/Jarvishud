@@ -1,0 +1,9 @@
+<resources>
+    <color name="bg">#071019</color>
+    <color name="panel">#E60A1520</color>
+    <color name="cyan">#5EC8FF</color>
+    <color name="cyan_soft">#9EDFFF</color>
+    <color name="text">#EAF7FF</color>
+    <color name="muted">#8BA3B5</color>
+    <color name="red">#FF4A63</color>
+</resources>
