@@ -8,8 +8,17 @@ final class VoiceRecognitionCoordinator {
     static final String ACTION_COMMAND_LISTENING = "com.fikret.jarvishud.COMMAND_LISTENING";
     static final String ACTION_VOICE_STATUS = "com.fikret.jarvishud.VOICE_STATUS";
     static final String ACTION_VOICE_COMMAND = "com.fikret.jarvishud.VOICE_COMMAND";
+
     static final String PREFS_NAME = "jarvis_voice";
     static final String PREF_WAKE_WORD_ENABLED = "wake_word_enabled";
+    static final String PREF_HEY_JARVIS_ENABLED = "trigger_hey_jarvis_enabled";
+    static final String PREF_JARVIS_KEYWORD_ENABLED = "trigger_jarvis_keyword_enabled";
+    static final String PREF_SELAM_JARVIS_ENABLED = "trigger_selam_jarvis_enabled";
+    static final String PREF_JARVIS_MENTION_ENABLED = "trigger_jarvis_mention_enabled";
+    static final String PREF_TRIPLE_CLAP_ENABLED = "trigger_triple_clap_enabled";
+    static final String PREF_WAKE_SENSITIVITY = "wake_sensitivity";
+    static final String PREF_CLAP_SENSITIVITY = "clap_sensitivity";
+    static final String PREF_TRIGGER_COOLDOWN_MS = "trigger_cooldown_ms";
 
     private static final AtomicBoolean ACTIVE = new AtomicBoolean();
 

@@ -21,6 +21,7 @@ import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.CompoundButton;
+import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import java.util.Locale;
@@ -41,6 +42,13 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView commandText;
     private Switch voiceActivationSwitch;
+    private Switch heyJarvisSwitch;
+    private Switch jarvisKeywordSwitch;
+    private Switch selamJarvisSwitch;
+    private Switch jarvisMentionSwitch;
+    private Switch tripleClapSwitch;
+    private SeekBar wakeSensitivitySeekBar;
+    private SeekBar clapSensitivitySeekBar;
     private boolean ttsReady;
     private boolean ttsInitializationComplete;
     private boolean recognitionActive;
@@ -86,9 +94,15 @@ public class MainActivity extends Activity {
         voiceActivationSwitch.setChecked(getVoicePreferences().getBoolean(
                 VoiceRecognitionCoordinator.PREF_WAKE_WORD_ENABLED, false));
         voiceActivationSwitch.setOnCheckedChangeListener(this::onVoiceActivationChanged);
+        configureTriggerControls();
         getVoicePreferences().registerOnSharedPreferenceChangeListener(voicePreferenceListener);
-        core.setOnClickListener(v -> toggleListening());
+        core.setOnClickListener(null); core.setClickable(false);
         findViewById(R.id.btnVoice).setOnClickListener(v -> toggleListening());
+        // JPLUS_HIDE_LEGACY
+        findViewById(R.id.btnVoice).setVisibility(android.view.View.GONE);
+        findViewById(R.id.btnStartOverlay).setVisibility(android.view.View.GONE);
+        findViewById(R.id.btnStopOverlay).setVisibility(android.view.View.GONE);
+        findViewById(R.id.btnRefreshWidget).setVisibility(android.view.View.GONE);
 
         initializeSpeechRecognizer();
         initializeTextToSpeech();
@@ -103,6 +117,55 @@ public class MainActivity extends Activity {
             stopService(new Intent(this,FloatingHudService.class));
         });
         refresh.setOnClickListener(v -> { NewsFetcher.fetch(this, x -> JarvisWidgetProvider.updateAll(this)); JarvisWidgetProvider.updateAll(this); });
+    }
+
+    private void configureTriggerControls() {
+        android.content.SharedPreferences prefs = getVoicePreferences();
+
+        heyJarvisSwitch = findViewById(R.id.switchHeyJarvis);
+        jarvisKeywordSwitch = findViewById(R.id.switchJarvisKeyword);
+        selamJarvisSwitch = findViewById(R.id.switchSelamJarvis);
+        jarvisMentionSwitch = findViewById(R.id.switchJarvisMention);
+        tripleClapSwitch = findViewById(R.id.switchTripleClap);
+        wakeSensitivitySeekBar = findViewById(R.id.seekWakeSensitivity);
+        clapSensitivitySeekBar = findViewById(R.id.seekClapSensitivity);
+
+        bindTriggerSwitch(heyJarvisSwitch, VoiceRecognitionCoordinator.PREF_HEY_JARVIS_ENABLED, true);
+        bindTriggerSwitch(jarvisKeywordSwitch, VoiceRecognitionCoordinator.PREF_JARVIS_KEYWORD_ENABLED, true);
+        bindTriggerSwitch(selamJarvisSwitch, VoiceRecognitionCoordinator.PREF_SELAM_JARVIS_ENABLED, true);
+        bindTriggerSwitch(jarvisMentionSwitch, VoiceRecognitionCoordinator.PREF_JARVIS_MENTION_ENABLED, true);
+        bindTriggerSwitch(tripleClapSwitch, VoiceRecognitionCoordinator.PREF_TRIPLE_CLAP_ENABLED, true);
+
+        wakeSensitivitySeekBar.setProgress(Math.round(100f * prefs.getFloat(
+                VoiceRecognitionCoordinator.PREF_WAKE_SENSITIVITY, 0.50f)));
+        wakeSensitivitySeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) prefs.edit().putFloat(
+                        VoiceRecognitionCoordinator.PREF_WAKE_SENSITIVITY,
+                        Math.max(0f, Math.min(1f, progress / 100f))).apply();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+
+        clapSensitivitySeekBar.setProgress(Math.round(100f * prefs.getFloat(
+                VoiceRecognitionCoordinator.PREF_CLAP_SENSITIVITY, 0.55f)));
+        clapSensitivitySeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) prefs.edit().putFloat(
+                        VoiceRecognitionCoordinator.PREF_CLAP_SENSITIVITY,
+                        Math.max(0f, Math.min(1f, progress / 100f))).apply();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+    }
+
+    private void bindTriggerSwitch(Switch target, String key, boolean defaultValue) {
+        android.content.SharedPreferences prefs = getVoicePreferences();
+        target.setChecked(prefs.getBoolean(key, defaultValue));
+        target.setOnCheckedChangeListener((button, enabled) ->
+                prefs.edit().putBoolean(key, enabled).apply());
     }
 
     private void initializeSpeechRecognizer() {
@@ -527,8 +590,9 @@ public class MainActivity extends Activity {
             setVoiceActivationSwitch(getVoicePreferences().getBoolean(
                     VoiceRecognitionCoordinator.PREF_WAKE_WORD_ENABLED, false));
         }
+    }
 
-        @Override protected void onStart() {
+    @Override protected void onStart() {
             super.onStart();
             IntentFilter filter = new IntentFilter();
             filter.addAction(VoiceRecognitionCoordinator.ACTION_VOICE_STATUS);
@@ -541,12 +605,11 @@ public class MainActivity extends Activity {
             voiceReceiverRegistered = true;
         }
 
-        @Override protected void onStop() {
-            if (voiceReceiverRegistered) {
-                unregisterReceiver(voiceStateReceiver);
-                voiceReceiverRegistered = false;
-            }
-            super.onStop();
+    @Override protected void onStop() {
+        if (voiceReceiverRegistered) {
+            unregisterReceiver(voiceStateReceiver);
+            voiceReceiverRegistered = false;
         }
+        super.onStop();
     }
 }

@@ -54,7 +54,11 @@ public class FloatingHudService extends Service {
     private TextToSpeech textToSpeech;
     private TextView voiceStatus;
     private TextView voiceCommand;
+    private WindowManager ambientHudWindowManager;
+    private JarvisAmbientOverlayView ambientHudView;
+    private WindowManager.LayoutParams ambientHudLayoutParams;
     private boolean recognitionActive;
+    private String lastPartialCommand = "";
     private boolean ttsReady;
     private boolean ttsInitializationComplete;
     private String pendingSpeech;
@@ -75,7 +79,8 @@ public class FloatingHudService extends Service {
         wakeWordEnabled = getVoicePreferences().getBoolean(
                 VoiceRecognitionCoordinator.PREF_WAKE_WORD_ENABLED, false);
         startForeground(11, notification());
-        if (Settings.canDrawOverlays(this)) showOverlay();
+        // J+ V2: legacy floating panel removed.
+        // Ambient HUD appears only during a voice session.
         initializeTextToSpeech();
     }
 
@@ -100,10 +105,19 @@ public class FloatingHudService extends Service {
         } else if (VoiceRecognitionCoordinator.ACTION_COMMAND_LISTENING.equals(action)
                 || ACTION_START_VOICE.equals(action)) {
             startCommandRecognition();
-        } else if (action == null && wakeWordEnabled) {
-            startWakeWord();
-        } else if (action == null && !overlayActive && !wakeWordEnabled) {
-            stopSelf();
+        } else if (action == null) {
+            // Yüzen panel açılırken native wake-word motorunu otomatik başlatma.
+            // Wake-word yalnızca ACTION_WAKE_WORD_START ile açıkça başlatılır.
+            if (overlayActive) {
+                setVoiceState(
+                        JarvisCoreView.Mode.IDLE,
+                        wakeWordEnabled
+                                ? "Yüzen panel hazır • Sesli aktivasyon beklemede"
+                                : "Yüzen panel aktif"
+                );
+            } else {
+                stopSelf();
+            }
         }
         return START_STICKY;
     }
@@ -165,79 +179,133 @@ public class FloatingHudService extends Service {
 
     private void startCommandRecognition() {
         if (!serviceActive) return;
+
         if (wakeWordRestart != null) {
             mainHandler.removeCallbacks(wakeWordRestart);
             wakeWordRestart = null;
         }
-        if (wakeWordManager != null && wakeWordManager.isListening()) stopWakeWord();
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            setVoiceState(JarvisCoreView.Mode.IDLE, "Mikrofon izni gerekli.");
-            Intent permissionIntent = new Intent(this, MainActivity.class);
-            permissionIntent.setAction(ACTION_REQUEST_VOICE_PERMISSION);
-            permissionIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            startActivity(permissionIntent);
+
+        if (wakeWordManager != null && wakeWordManager.isListening()) {
+            stopWakeWord();
+        }
+
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            showVoiceError("Mikrofon izni gerekli.", SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS);
             return;
         }
+
         if (recognitionActive) return;
+
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             showVoiceError("Bu cihazda konuşma tanıma kullanılamıyor.", SpeechRecognizer.ERROR_CLIENT);
             restartWakeWordAfterCommand();
             return;
         }
+
         if (speechRecognizer == null) {
             try {
                 speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
                 speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                    @Override public void onReadyForSpeech(Bundle params) {
+                    @Override
+                    public void onReadyForSpeech(Bundle params) {
                         setVoiceState(JarvisCoreView.Mode.LISTENING, "Sizi dinliyorum...");
                     }
 
-                    @Override public void onBeginningOfSpeech() {
+                    @Override
+                    public void onBeginningOfSpeech() {
                         setVoiceState(JarvisCoreView.Mode.LISTENING, "Konuşmanızı dinliyorum...");
                     }
 
-                    @Override public void onRmsChanged(float rmsdB) {
-                        float amplitude = Math.max(0f, Math.min(0.35f, (rmsdB + 2f) / 14f * 0.35f));
-                        JarvisCoreView target = core;
-                        View targetRoot = root;
-                        if (recognitionActive && target != null && (!overlayActive || targetRoot != null)) {
-                            mainHandler.post(() -> {
-                                if (recognitionActive && core == target
-                                        && ((!overlayActive && targetRoot == null)
-                                        || (overlayActive && root == targetRoot))) {
-                                    target.setAmplitude(amplitude);
-                                }
-                            });
+                    @Override
+                    public void onRmsChanged(float rmsdB) {
+                        float amplitude = Math.max(
+                                0f,
+                                Math.min(1f, (rmsdB + 2f) / 12f)
+                        );
+
+                        if (core != null) {
+                            core.setAmplitude(amplitude);
+                        }
+
+                        if (ambientHudView != null) {
+                            ambientHudView.setAmplitude(amplitude);
                         }
                     }
 
-                    @Override public void onPartialResults(Bundle partialResults) {
+                    @Override
+                    public void onPartialResults(Bundle partialResults) {
                         String partial = bestResult(partialResults);
-                        if (!partial.isEmpty() && overlayActive && voiceCommand != null) {
-                            voiceCommand.setText(partial);
+                        if (!partial.isEmpty()) {
+                            lastPartialCommand = partial;
+                            if (voiceCommand != null) {
+                                voiceCommand.setText(partial);
+                            }
                         }
                     }
 
-                    @Override public void onResults(Bundle results) {
-                        finishRecognition();
-                        if (!isVoiceServiceActive()) return;
+                    @Override
+                    public void onResults(Bundle results) {
                         String command = bestResult(results);
+
+                        if (command.isEmpty()) {
+                            command = lastPartialCommand == null
+                                    ? ""
+                                    : lastPartialCommand.trim();
+                        }
+
+                        finishRecognition();
+
+                        if (!isVoiceServiceActive()) return;
+
                         if (command.isEmpty()) {
                             handleCommandError(SpeechRecognizer.ERROR_NO_MATCH);
                             return;
                         }
+
                         Log.i(TAG, "COMMAND_RESULT: " + command);
-                        if (voiceCommand != null) voiceCommand.setText(command);
+
+                        if (voiceCommand != null) {
+                            voiceCommand.setText(command);
+                        }
+
                         broadcastVoiceCommand(command);
+                        lastPartialCommand = "";
                         sendToJarvis(command);
                     }
 
-                    @Override public void onEndOfSpeech() {
-                        setVoiceState(JarvisCoreView.Mode.PROCESSING, "Komutunuz işleniyor...");
+                    @Override
+                    public void onEndOfSpeech() {
+                        setVoiceState(
+                                JarvisCoreView.Mode.PROCESSING,
+                                "Komutunuz işleniyor..."
+                        );
                     }
 
-                    @Override public void onError(int error) {
+                    @Override
+                    public void onError(int error) {
+                        String partial = lastPartialCommand == null
+                                ? ""
+                                : lastPartialCommand.trim();
+
                         finishRecognition();
+
+                        if ((error == SpeechRecognizer.ERROR_NO_MATCH
+                                || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+                                && !partial.isEmpty()) {
+                            Log.i(TAG, "COMMAND_PARTIAL_FALLBACK: " + partial);
+
+                            if (voiceCommand != null) {
+                                voiceCommand.setText(partial);
+                            }
+
+                            broadcastVoiceCommand(partial);
+                            lastPartialCommand = "";
+                            sendToJarvis(partial);
+                            return;
+                        }
+
+                        lastPartialCommand = "";
                         handleCommandError(error);
                     }
 
@@ -246,35 +314,68 @@ public class FloatingHudService extends Service {
                 });
             } catch (RuntimeException exception) {
                 Log.e(TAG, "Unable to create SpeechRecognizer", exception);
-                showVoiceError("Konuşma tanıma başlatılamadı.", SpeechRecognizer.ERROR_CLIENT);
+                showVoiceError(
+                        "Konuşma tanıma başlatılamadı.",
+                        SpeechRecognizer.ERROR_CLIENT
+                );
                 restartWakeWordAfterCommand();
                 return;
             }
         }
+
         if (!VoiceRecognitionCoordinator.tryAcquire()) {
-            showVoiceError("Başka bir JARVIS oturumu şu anda dinliyor.", SpeechRecognizer.ERROR_RECOGNIZER_BUSY);
+            showVoiceError(
+                    "Mikrofon başka bir ses oturumu tarafından kullanılıyor.",
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+            );
             restartWakeWordAfterCommand();
             return;
         }
+
         if (textToSpeech != null) {
             textToSpeech.stop();
             activeUtteranceId = null;
         }
-        if (errorReset != null) mainHandler.removeCallbacks(errorReset);
-        if (voiceCommand != null) voiceCommand.setText("Dinleme başlatılıyor...");
+
+        if (errorReset != null) {
+            mainHandler.removeCallbacks(errorReset);
+        }
+
+        lastPartialCommand = "";
+
+        if (voiceCommand != null) {
+            voiceCommand.setText("Dinleme başlatılıyor...");
+        }
+
         Log.i(TAG, "COMMAND_LISTENING");
-        setVoiceState(JarvisCoreView.Mode.LISTENING, "Dinlemeye hazırlanıyor...");
+        setVoiceState(
+                JarvisCoreView.Mode.LISTENING,
+                "Dinlemeye hazırlanıyor..."
+        );
+
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+        );
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "tr-TR");
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 900L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1400L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 800L);
+
         recognitionActive = true;
+
         try {
             speechRecognizer.startListening(intent);
         } catch (RuntimeException exception) {
             finishRecognition();
-            showVoiceError("Dinleme başlatılamadı.", SpeechRecognizer.ERROR_CLIENT);
+            showVoiceError(
+                    "Dinleme başlatılamadı.",
+                    SpeechRecognizer.ERROR_CLIENT
+            );
             restartWakeWordAfterCommand();
         }
     }
@@ -317,50 +418,99 @@ public class FloatingHudService extends Service {
 
     private boolean startWakeWord() {
         if (!wakeWordEnabled || !serviceActive) return false;
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "RECORD_AUDIO permission missing; wake word not started");
-            showVoiceError("Mikrofon izni gerekli.", PackageManager.PERMISSION_DENIED);
-            setWakeWordEnabled(false);
-            if (!overlayActive) stopSelf();
+
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            showVoiceError(
+                    "Mikrofon izni gerekli.",
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+            );
             return false;
         }
-        if (wakeWordManager == null) {
-            wakeWordManager = new WakeWordManager(this, new WakeWordManager.Listener() {
-                @Override public void onWakeWordDetected() {
-                    Log.d(TAG, "WAKE_WORD_DETECTED");
-                    mainHandler.post(() -> {
-                        if (!wakeWordEnabled || !serviceActive) return;
-                        stopWakeWord();
-                        if (core != null) core.setMode(JarvisCoreView.Mode.LISTENING);
-                        setVoiceState(JarvisCoreView.Mode.LISTENING, "Jarvis algılandı. Komutunuzu söyleyin.");
-                        startCommandRecognition();
-                    });
-                }
 
-                @Override public void onWakeWordError(Exception error) {
-                    mainHandler.post(() -> {
-                        Log.e(TAG, "Wake-word engine stopped unexpectedly", error);
-                        stopWakeWord();
-                        setWakeWordEnabled(false);
-                        showVoiceError("Sesli aktivasyon başlatılamadı.", SpeechRecognizer.ERROR_CLIENT);
-                        if (!overlayActive) stopSelf();
-                    });
-                }
-            });
+        if (wakeWordManager == null) {
+            wakeWordManager = new WakeWordManager(
+                    this,
+                    new WakeWordManager.Listener() {
+                        @Override
+                        public void onWakeWordDetected() {
+                            Log.d(TAG, "WAKE_WORD_DETECTED");
+
+                            mainHandler.post(() -> {
+                                if (!wakeWordEnabled || !serviceActive) return;
+
+                                stopWakeWord();
+
+                                setVoiceState(
+                                        JarvisCoreView.Mode.LISTENING,
+                                        "Jarvis algılandı. Dinliyorum..."
+                                );
+
+                                mainHandler.postDelayed(() -> {
+                                    if (wakeWordEnabled && serviceActive) {
+                                        startCommandRecognition();
+                                    }
+                                }, 650);
+                            });
+                        }
+
+                        @Override
+                        public void onWakeWordError(Exception error) {
+                            mainHandler.post(() -> {
+                                Log.e(
+                                        TAG,
+                                        "Wake-word engine stopped unexpectedly",
+                                        error
+                                );
+
+                                stopWakeWord();
+
+                                showVoiceError(
+                                        "Pasif ses algılama geçici olarak durdu.",
+                                        SpeechRecognizer.ERROR_CLIENT
+                                );
+
+                                if (wakeWordEnabled && serviceActive) {
+                                    mainHandler.postDelayed(
+                                            () -> {
+                                                if (wakeWordEnabled && serviceActive) {
+                                                    startWakeWord();
+                                                }
+                                            },
+                                            1800
+                                    );
+                                }
+                            });
+                        }
+                    }
+            );
         }
+
         if (!wakeWordManager.start()) {
             if (VoiceRecognitionCoordinator.isInUse()) {
-                setVoiceState(JarvisCoreView.Mode.ERROR, "Mikrofon başka bir ses oturumu tarafından kullanılıyor.");
+                setVoiceState(
+                        JarvisCoreView.Mode.ERROR,
+                        "Mikrofon başka bir ses oturumu tarafından kullanılıyor."
+                );
                 return false;
             }
-            setVoiceState(JarvisCoreView.Mode.ERROR, "Wake-word başlatılamadı. Model dosyaları kontrol edin.");
-            setWakeWordEnabled(false);
-            Toast.makeText(this, "Sesli aktivasyon model dosyaları eksik.", Toast.LENGTH_LONG).show();
-            if (!overlayActive) stopSelf();
+
+            setVoiceState(
+                    JarvisCoreView.Mode.ERROR,
+                    "Pasif ses algılama başlatılamadı."
+            );
             return false;
         }
-        setVoiceState(JarvisCoreView.Mode.IDLE, "WAKE_WORD_LISTENING • “Jarvis” deyin");
-        if (core != null) core.setMode(JarvisCoreView.Mode.IDLE);
+
+        setVoiceState(
+                JarvisCoreView.Mode.IDLE,
+                "WAKE • Jarvis / Hey Jarvis / Selam Jarvis / 3 alkış"
+        );
+
+        if (core != null) {
+            core.setMode(JarvisCoreView.Mode.IDLE);
+        }
+
         return true;
     }
 
@@ -487,14 +637,37 @@ public class FloatingHudService extends Service {
     }
 
     private void setVoiceState(JarvisCoreView.Mode mode, String message) {
-        Intent statusIntent = new Intent(VoiceRecognitionCoordinator.ACTION_VOICE_STATUS)
-                .setPackage(getPackageName())
-                .putExtra("mode", mode.name())
-                .putExtra("message", message);
-        sendBroadcast(statusIntent);
-        if (!overlayActive) return;
-        if (core != null) core.setMode(mode);
-        if (voiceStatus != null) voiceStatus.setText(mode.name() + " • " + message);
+        Intent i=new Intent(VoiceRecognitionCoordinator.ACTION_VOICE_STATUS).setPackage(getPackageName())
+                .putExtra("mode",mode.name()).putExtra("message",message);
+        sendBroadcast(i); updateAmbientHud(mode,message);
+        if(core!=null) core.setMode(mode);
+        if(voiceStatus!=null) voiceStatus.setText(mode.name()+" • "+message);
+    }
+
+    private void updateAmbientHud(JarvisCoreView.Mode mode,String message){
+        if(mode==JarvisCoreView.Mode.IDLE){ hideAmbientHud(); return; }
+        showAmbientHud(); if(ambientHudView!=null) ambientHudView.setState(mode,message);
+    }
+
+    private void showAmbientHud(){
+        if(ambientHudView!=null || !Settings.canDrawOverlays(this)) return;
+        ambientHudWindowManager=(WindowManager)getSystemService(WINDOW_SERVICE);
+        ambientHudView=new JarvisAmbientOverlayView(this);
+        int flags=WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                |WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+        ambientHudLayoutParams=new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                flags,PixelFormat.TRANSLUCENT);
+        ambientHudLayoutParams.gravity=Gravity.TOP|Gravity.START;
+        try{ ambientHudWindowManager.addView(ambientHudView,ambientHudLayoutParams); }
+        catch(RuntimeException e){ Log.e(TAG,"J+ Ambient HUD açılamadı",e); ambientHudView=null; }
+    }
+
+    private void hideAmbientHud(){
+        if(ambientHudWindowManager!=null && ambientHudView!=null){
+            try{ ambientHudWindowManager.removeView(ambientHudView); }catch(RuntimeException ignored){}
+        }
+        ambientHudView=null; ambientHudLayoutParams=null;
     }
 
     private void broadcastVoiceCommand(String command) {
@@ -504,22 +677,19 @@ public class FloatingHudService extends Service {
         sendBroadcast(commandIntent);
     }
 
-    private void showVoiceError(String message, int errorCode) {
-        Log.e(TAG, "Voice operation failed; errorCode=" + errorCode + ", message=" + message);
-        if (!overlayActive) return;
-        setVoiceState(JarvisCoreView.Mode.ERROR, message);
-        if (errorReset != null) mainHandler.removeCallbacks(errorReset);
-        errorReset = () -> {
-            if (overlayActive) setVoiceState(JarvisCoreView.Mode.IDLE, "Hazır");
-        };
-        mainHandler.postDelayed(errorReset, 2200);
+    private void showVoiceError(String message,int errorCode){
+        Log.e(TAG,"Voice operation failed; errorCode="+errorCode+", message="+message);
+        setVoiceState(JarvisCoreView.Mode.ERROR,message);
+        if(errorReset!=null) mainHandler.removeCallbacks(errorReset);
+        errorReset=()->{ if(serviceActive) setVoiceState(JarvisCoreView.Mode.IDLE,"Hazır"); };
+        mainHandler.postDelayed(errorReset,1800);
     }
 
     private Notification notification() {
         Intent i=new Intent(this,MainActivity.class); PendingIntent pi=PendingIntent.getActivity(this,0,i,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Builder b=Build.VERSION.SDK_INT>=26?new Notification.Builder(this,CH):new Notification.Builder(this);
-        String text = wakeWordEnabled ? "Sesli aktivasyon etkin" : "Yüzen panel aktif";
-        return b.setContentTitle("JARVIS").setContentText(text).setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pi).setOngoing(true).build();
+        String text = wakeWordEnabled ? "JARVIS hands-free aktif" : "JARVIS hazır";
+        return b.setContentTitle("JARVIS").setContentText(text).setSmallIcon(R.drawable.ic_jarvis_plus_small).setContentIntent(pi).setOngoing(true).build();
     }
     private void createChannel(){ if(Build.VERSION.SDK_INT>=26){ NotificationManager nm=getSystemService(NotificationManager.class); nm.createNotificationChannel(new NotificationChannel(CH,getString(R.string.notif_channel),NotificationManager.IMPORTANCE_LOW)); } }
     private int dp(int v){ return (int)(v*getResources().getDisplayMetrics().density); }
@@ -546,10 +716,9 @@ public class FloatingHudService extends Service {
         }
         activeUtteranceId = null;
         pendingSpeech=null;
-        wakeWordEnabled = false;
-        getVoicePreferences().edit()
-                .putBoolean(VoiceRecognitionCoordinator.PREF_WAKE_WORD_ENABLED, false)
-                .apply();
+        // Kullanıcının Sesli Aktivasyon tercihini servis kapanırken değiştirme.
+        wakeWordEnabled = getVoicePreferences().getBoolean(
+                VoiceRecognitionCoordinator.PREF_WAKE_WORD_ENABLED, false);
         try { if(wm!=null && root!=null) wm.removeView(root); } catch(Exception ignored) {}
         root=null; core=null; voiceStatus=null; voiceCommand=null;
         Log.i(TAG, "VOICE_SERVICE_STOPPED");

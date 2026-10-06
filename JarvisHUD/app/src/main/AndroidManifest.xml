@@ -18,7 +18,9 @@
         android:allowBackup="true"
         android:label="@string/app_name"
         android:theme="@style/AppTheme"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        android:icon="@drawable/ic_jarvis_plus"
+        android:roundIcon="@drawable/ic_jarvis_plus">
 
         <activity
             android:name=".MainActivity"
@@ -33,17 +35,5 @@
             android:name=".FloatingHudService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
-
-        <receiver
-            android:name=".JarvisWidgetProvider"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/jarvis_widget_info" />
-        </receiver>
-
-    </application>
+</application>
 </manifest>
